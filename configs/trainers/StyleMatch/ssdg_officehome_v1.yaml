@@ -19,6 +19,9 @@ TRAIN:
   COUNT_ITER: "train_u"
   PRINT_FREQ: 10
 
+TEST:
+  FINAL_MODEL: "best_val"
+
 ##########
 # StyleMatch
 # stochastic classifier + T_style

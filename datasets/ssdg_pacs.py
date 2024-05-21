@@ -86,11 +86,12 @@ class SSDGPACS(DatasetBase):
                 domain = src_domains.index(dname)
                 impath2 = osp.join(image_dir, impath)
                 if not osp.exists(impath2):
-                    impath = impath.split("/")
+                    impath = impath.split("\\")#windows采用\\
                     if impath[-2].startswith("0"):
                         impath[-2] = impath[-2][4:]
-                    impath = "/".join(impath)
-                    impath2 = osp.join(image_dir, impath)
+                    impath = "\\".join(impath)
+                    # impath2 = osp.join(image_dir, impath)#路径拼接出问题？
+                    impath2 = image_dir+impath#采用直接字符串拼接的方式
                 item = Datum(impath=impath2, label=int(label), domain=domain)
                 out.append(item)
             return out

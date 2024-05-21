@@ -8,7 +8,7 @@ from dassl.engine import build_trainer
 # new imports
 from yacs.config import CfgNode as CN
 import copy
-
+import wandb
 # datasets
 import datasets.ssdg_pacs
 import datasets.ssdg_officehome
@@ -96,13 +96,37 @@ def setup_cfg(args):
     # 4. From optional input arguments
     cfg.merge_from_list(args.opts)
 
+    clean_cfg(cfg, args.trainer)
     cfg.freeze()
 
     return cfg
 
+def clean_cfg(cfg, trainer):
+    """Remove unused trainers (configs).
+
+    Aim: Only show relevant information when calling print(cfg).
+
+    Args:
+        cfg (_C): cfg instance.
+        trainer (str): trainer name.
+    """
+    keys = list(cfg.TRAINER.keys())
+    for key in keys:
+        if key == "NAME" or key == trainer.upper():
+            continue
+        cfg.TRAINER.pop(key, None)
 
 def main(args):
     cfg = setup_cfg(args)
+    wandb.init(
+        project="ssdg",
+        name="{}-{}-{}-".format(
+            args.trainer,
+            args.target_domains,
+            cfg.OPTIM.LR
+        ),
+        config=vars(args)  # namespace to dict
+    )
     if cfg.SEED >= 0:
         print("Setting fixed seed: {}".format(cfg.SEED))
         set_random_seed(cfg.SEED)
@@ -112,8 +136,8 @@ def main(args):
         torch.backends.cudnn.benchmark = True
 
     print_args(args, cfg)
-    print("Collecting env info ...")
-    print("** System info **\n{}\n".format(collect_env_info()))
+    # print("Collecting env info ...")
+    # print("** System info **\n{}\n".format(collect_env_info()))
 
     trainer = build_trainer(cfg)
 
@@ -128,37 +152,18 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--root", type=str, default="", help="path to dataset")
+    parser.add_argument("--root", type=str, default="D:\ML\Dataset", help="path to dataset")
     parser.add_argument("--output-dir", type=str, default="", help="output directory")
-    parser.add_argument(
-        "--resume",
-        type=str,
-        default="",
-        help="checkpoint directory (from which the training resumes)",
-    )
-    parser.add_argument(
-        "--seed", type=int, default=-1, help="only positive value enables a fixed seed"
-    )
-    parser.add_argument(
-        "--source-domains", type=str, nargs="+", help="source domains for DA/DG"
-    )
-    parser.add_argument(
-        "--target-domains", type=str, nargs="+", help="target domains for DA/DG"
-    )
-    parser.add_argument(
-        "--transforms", type=str, nargs="+", help="data augmentation methods"
-    )
-    parser.add_argument(
-        "--config-file", type=str, default="", help="path to config file"
-    )
-    parser.add_argument(
-        "--dataset-config-file",
-        type=str,
-        default="",
-        help="path to config file for dataset setup",
-    )
-    parser.add_argument("--trainer", type=str, default="", help="name of trainer")
-    parser.add_argument("--backbone", type=str, default="", help="name of CNN backbone")
+    parser.add_argument("--resume", type=str, default="", help="checkpoint directory (from which the training resumes)", )
+    parser.add_argument("--seed", type=int, default=42, help="only positive value enables a fixed seed")
+    parser.add_argument("--source-domains", type=str, default=["art", "product", "real_world"], nargs="+")
+    parser.add_argument("--target-domains", type=str, default=["clipart"], nargs="+")
+    parser.add_argument("--transforms", type=str, nargs="+", help="data augmentation methods")
+    parser.add_argument("--config-file", type=str, default="./configs/trainers/StyleMatch/ssdg_officehome_v1.yaml")
+    parser.add_argument("--dataset-config-file", type=str, default="./configs/datasets/ssdg_officehome.yaml", )
+    # StyleMatch的train函数
+    parser.add_argument("--trainer", type=str, default="StyleMatch", help="name of trainer")
+    parser.add_argument("--backbone", type=str, help="name of CNN backbone")
     parser.add_argument("--head", type=str, default="", help="name of head")
     parser.add_argument("--eval-only", action="store_true", help="evaluation only")
     parser.add_argument(

@@ -31,10 +31,12 @@ def freeze_models_params(models):
                 param.requires_grad_(True)
 
 
+# 计算image feat与每个类别prototype feat的相似度
 class StochasticClassifier(nn.Module):
     def __init__(self, num_features, num_classes, temp=0.05):
         super().__init__()
-        self.mu = nn.Parameter(0.01 * torch.randn(num_classes, num_features))
+        self.mu = nn.Parameter(
+            0.01 * torch.randn(num_classes, num_features))  # num_classes*num_features，代表每个类别的prototype feat
         self.sigma = nn.Parameter(torch.zeros(num_classes, num_features))
         self.temp = temp
 
@@ -43,8 +45,9 @@ class StochasticClassifier(nn.Module):
         sigma = self.sigma
 
         if stochastic:
+            # Softplus函数可以看作是ReLU函数的平滑, softplus(x) = log(1 + exp(x))
             sigma = F.softplus(sigma - 4)  # when sigma=0, softplus(sigma-4)=0.0181
-            weight = sigma * torch.randn_like(mu) + mu
+            weight = sigma * torch.randn_like(mu) + mu  # 添加一部分随机性
         else:
             weight = mu
 
@@ -93,6 +96,7 @@ class StyleMatch(TrainerXU):
             norm_mean = cfg.INPUT.PIXEL_MEAN
             norm_std = cfg.INPUT.PIXEL_STD
 
+        # 调用AdaIN进行风格迁移
         self.adain = AdaIN(
             cfg.TRAINER.STYLEMATCH.ADAIN_DECODER,
             cfg.TRAINER.STYLEMATCH.ADAIN_VGG,
@@ -100,7 +104,7 @@ class StyleMatch(TrainerXU):
             norm_mean=norm_mean,
             norm_std=norm_std,
         )
-
+        #    apply both strong aug and style aug
         self.apply_aug = cfg.TRAINER.STYLEMATCH.APPLY_AUG
         self.apply_sty = cfg.TRAINER.STYLEMATCH.APPLY_STY
 
@@ -118,9 +122,9 @@ class StyleMatch(TrainerXU):
         cfg = self.cfg
         tfm_train = build_transform(cfg, is_train=True)
         custom_tfm_train = [tfm_train]
-        choices = cfg.TRAINER.STYLEMATCH.STRONG_TRANSFORMS
+        choices = cfg.TRAINER.STYLEMATCH.STRONG_TRANSFORMS  # strong aug methods
         tfm_train_strong = build_transform(cfg, is_train=True, choices=choices)
-        custom_tfm_train += [tfm_train_strong]
+        custom_tfm_train += [tfm_train_strong]  # train set的 transform方式
         dm = DataManager(self.cfg, custom_tfm_train=custom_tfm_train)
         self.train_loader_x = dm.train_loader_x
         self.train_loader_u = dm.train_loader_u
@@ -133,7 +137,7 @@ class StyleMatch(TrainerXU):
     def build_model(self):
         cfg = self.cfg
 
-        print("Building G")
+        print("Building G (image feat extractor)")  # feat extract net
         self.G = SimpleNet(cfg, cfg.MODEL, 0)  # n_class=0: only produce features
         self.G.to(self.device)
         print("# params: {:,}".format(count_num_param(self.G)))
@@ -141,8 +145,8 @@ class StyleMatch(TrainerXU):
         self.sched_G = build_lr_scheduler(self.optim_G, cfg.OPTIM)
         self.register_model("G", self.G, self.optim_G, self.sched_G)
 
-        print("Building C")
-        if cfg.TRAINER.STYLEMATCH.CLASSIFIER == "stochastic":
+        print("Building C (stochastic neural network)")
+        if cfg.TRAINER.STYLEMATCH.CLASSIFIER == "stochastic":  # 可以简单理解为添加了一定随机性的线性分类层
             self.C = StochasticClassifier(self.G.fdim, self.num_classes)
         else:
             self.C = NormalClassifier(self.G.fdim, self.num_classes)
@@ -152,6 +156,7 @@ class StyleMatch(TrainerXU):
         self.sched_C = build_lr_scheduler(self.optim_C, cfg.TRAINER.STYLEMATCH.C_OPTIM)
         self.register_model("C", self.C, self.optim_C, self.sched_C)
 
+    # 评估预测结果
     def assess_y_pred_quality(self, y_pred, y_true, mask):
         n_masked_correct = (y_pred.eq(y_true).float() * mask).sum()
         acc_thre = n_masked_correct / (mask.sum() + 1e-5)  # accuracy after threshold
@@ -163,70 +168,70 @@ class StyleMatch(TrainerXU):
     def forward_backward(self, batch_x, batch_u):
         parsed_batch = self.parse_batch_train(batch_x, batch_u)
 
-        x0 = parsed_batch["x0"]
-        x = parsed_batch["x"]
-        x_aug = parsed_batch["x_aug"]
+        x0 = parsed_batch["x0"]  # no augmentation
+        x = parsed_batch["x"]  # weak augmentation
+        x_aug = parsed_batch["x_aug"]  # strong augmentation
         y_x_true = parsed_batch["y_x_true"]
 
         u0 = parsed_batch["u0"]
         u = parsed_batch["u"]
         u_aug = parsed_batch["u_aug"]
-        y_u_true = parsed_batch["y_u_true"]  # tensor
+        y_u_true = parsed_batch["y_u_true"]  # SSL:将一部分有标签样本作为无标签样本使用
 
-        K = self.num_source_domains
+        K = self.num_source_domains  # 源域数目
         # NOTE: If num_source_domains=1, we split a batch into two halves
         K = 2 if K == 1 else K
 
         ####################
-        # Generate pseudo labels
+        # Generate pseudo labels，生成无标签样本 弱增强后的伪标签，并计算其准确性
         ####################
         with torch.no_grad():
             p_xu = []
-            for k in range(K):
-                x_k = x[k]
-                u_k = u[k]
-                xu_k = torch.cat([x_k, u_k], 0)
-                z_xu_k = self.C(self.G(xu_k), stochastic=False)
+            for k in range(K):  # 对特定域k
+                x_k = x[k]  # labeled: weak aug
+                u_k = u[k]  # unlabeled: weak aug
+                xu_k = torch.cat([x_k, u_k], 0)  # 沿batch维度拼接有标签样本和无标签样本
+                z_xu_k = self.C(self.G(xu_k), stochastic=False)  # self.G
                 p_xu_k = F.softmax(z_xu_k, 1)
-                p_xu.append(p_xu_k)
-            p_xu = torch.cat(p_xu, 0)
+                p_xu.append(p_xu_k)  # 弱增强样本的预测，会作为强增强样本以及style增强样本的gt
+            p_xu = torch.cat(p_xu, 0)  # 2*K*Batch_per_domain，num_class
 
-            p_xu_maxval, y_xu_pred = p_xu.max(1)
-            mask_xu = (p_xu_maxval >= self.conf_thre).float()
+            p_xu_maxval, y_xu_pred = p_xu.max(1)  # 2*K*Batch_per_domain
+            mask_xu = (p_xu_maxval >= self.conf_thre).float()  # 对预测结果大于阈值的样本设定mask
 
-            y_xu_pred = y_xu_pred.chunk(K)
+            y_xu_pred = y_xu_pred.chunk(K)  # 将数据切成K块，对应K个域
             mask_xu = mask_xu.chunk(K)
 
             # Calculate pseudo-label's accuracy
             y_u_pred = []
             mask_u = []
             for y_xu_k_pred, mask_xu_k in zip(y_xu_pred, mask_xu):
-                y_u_pred.append(
+                y_u_pred.append(  # K个Batch_per_domain组成的列表
                     y_xu_k_pred.chunk(2)[1]
                 )  # only take the 2nd half (unlabeled data)
                 mask_u.append(mask_xu_k.chunk(2)[1])
-            y_u_pred = torch.cat(y_u_pred, 0)
-            mask_u = torch.cat(mask_u, 0)
+            y_u_pred = torch.cat(y_u_pred, 0)  # K*Batch_per_domain，
+            mask_u = torch.cat(mask_u, 0)  # K*Batch_per_domain，
             y_u_pred_stats = self.assess_y_pred_quality(y_u_pred, y_u_true, mask_u)
 
         ####################
-        # Generate style transferred images
+        # Generate style transferred images，生成风格变换图片
         ####################
         if self.apply_sty:
             xu_sty = []
             for k in range(K):
                 # Content
-                x_k = x0[k]
-                u_k = u0[k]
+                x_k = x0[k]  # 有标签的原始图片，BCHW
+                u_k = u0[k]  # 无标签的原始图片，BCHW
                 xu_k = torch.cat([x_k, u_k], 0)
-                # Style
+                # Style，随机选择一个其他域
                 other_domains = [i for i in range(K) if i != k]
                 k2 = random.choice(other_domains)
-                x_k2 = x0[k2]
+                x_k2 = x0[k2]  # 有标签的原始图片，BCHW
                 u_k2 = u0[k2]
                 xu_k2 = torch.cat([x_k2, u_k2], 0)
                 # Transfer
-                xu_k_sty = self.adain(xu_k, xu_k2)
+                xu_k_sty = self.adain(xu_k, xu_k2)  # 得到混合style后的特征BCHW，可视化展现查看区别？
                 xu_sty.append(xu_k_sty)
 
         ####################
@@ -237,15 +242,15 @@ class StyleMatch(TrainerXU):
             x_k = x[k]
             y_x_k_true = y_x_true[k]
             z_x_k = self.C(self.G(x_k), stochastic=True)
-            loss_x += F.cross_entropy(z_x_k, y_x_k_true)
+            loss_x += F.cross_entropy(z_x_k, y_x_k_true)  # Supervised loss of labeled weak aug
 
         ####################
         # Unsupervised loss
         ####################
         loss_u_aug = 0
         loss_u_sty = 0
-        for k in range(K):
-            y_xu_k_pred = y_xu_pred[k]
+        for k in range(K):  #
+            y_xu_k_pred = y_xu_pred[k]  # weak aug pred
             mask_xu_k = mask_xu[k]
 
             # Compute loss for strongly augmented data
@@ -257,7 +262,7 @@ class StyleMatch(TrainerXU):
                 z_xu_k_aug = self.C(f_xu_k_aug, stochastic=True)
                 loss = F.cross_entropy(z_xu_k_aug, y_xu_k_pred, reduction="none")
                 loss = (loss * mask_xu_k).mean()
-                loss_u_aug += loss
+                loss_u_aug += loss  # loss for strongly augmented data
 
             # Compute loss for style transferred data
             if self.apply_sty:
@@ -266,7 +271,7 @@ class StyleMatch(TrainerXU):
                 z_xu_k_sty = self.C(f_xu_k_sty, stochastic=True)
                 loss = F.cross_entropy(z_xu_k_sty, y_xu_k_pred, reduction="none")
                 loss = (loss * mask_xu_k).mean()
-                loss_u_sty += loss
+                loss_u_sty += loss  # loss for style transferred data
 
         loss_summary = {}
 
